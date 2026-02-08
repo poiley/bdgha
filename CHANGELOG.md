@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-02-08
+
+### Documentation
+- Added badges (release, license) to README
+- Added "What This Does" summary section for quick understanding
+- Added visual flow diagram showing create → fix → cleanup cycle
+- Added comprehensive FAQ section covering common questions
+- Added Roadmap section for future enhancements
+- Enhanced .gitignore with more patterns (IDE, build artifacts, test frameworks)
+
+### Notes
+- No functional changes - documentation improvements only
+- Existing users automatically get these improvements via `@v1` tag
+
 ## [1.0.0] - 2026-02-08
 
 ### Added
@@ -26,4 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful handling of missing parent beads
 - Automatic conflict resolution for sync branch
 
+[1.0.1]: https://github.com/poiley/bdgha/releases/tag/v1.0.1
 [1.0.0]: https://github.com/poiley/bdgha/releases/tag/v1.0.0
