@@ -1,0 +1,188 @@
+name: Complete CI with Auto-Remediation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Quality Gates
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Run tests
+        run: go test -v -race -json ./... > test-results.json 2>&1 || true
+      - name: Check results
+        run: |
+          if grep -q '"Action":"fail"' test-results.json; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.json
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Run coverage
+        run: |
+          go test -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Check threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | sed 's/%//')
+          if (( $(echo "$COVERAGE < 100.0" | bc -l) )); then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Run linter
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
+          golangci-lint run --out-format=line-number > lint-results.txt 2>&1 || true
+      - name: Check results
+        run: |
+          if [ -s lint-results.txt ]; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-results
+          path: lint-results.txt
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Build
+        run: go build -v ./...
+
+  # Auto-Remediation for Test Failures
+  fix-tests:
+    if: failure() && github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-results
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: test_failure
+          failure-summary: "Tests failed"
+          failure-details-file: test-results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Auto-Remediation for Coverage Gaps
+  fix-coverage:
+    if: failure() && github.event_name == 'pull_request'
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: coverage_gap
+          failure-summary: "Coverage below 100%"
+          failure-details-file: coverage.out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Auto-Remediation for Lint Errors
+  fix-lint:
+    if: failure() && github.event_name == 'pull_request'
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: lint-results
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: lint_error
+          failure-summary: "Lint violations found"
+          failure-details-file: lint-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Auto-Remediation for Build Errors
+  fix-build:
+    if: failure() && github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: build_error
+          failure-summary: "Build failed"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Cleanup when all gates pass
+  cleanup:
+    if: success() && github.event_name == 'pull_request'
+    needs: [test, coverage, lint, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: poiley/bdgha@v1
+        with:
+          mode: cleanup
+          github-token: ${{ secrets.GITHUB_TOKEN }}

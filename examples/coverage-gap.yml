@@ -1,0 +1,83 @@
+name: Coverage with Auto-Remediation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  coverage:
+    name: Check Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run coverage
+        run: |
+          go test -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out > coverage-summary.txt
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | sed 's/%//')
+          if (( $(echo "$COVERAGE < 100.0" | bc -l) )); then
+            echo "Coverage below 100%: $COVERAGE%"
+            exit 1
+          fi
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage-summary.txt
+
+  create-fix-bead:
+    name: Create Fix Bead
+    if: failure() && github.event_name == 'pull_request'
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: coverage_gap
+          failure-summary: "Coverage below 100%"
+          failure-details-file: coverage.out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-fix-beads:
+    name: Cleanup Fix Beads
+    if: success() && github.event_name == 'pull_request'
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: cleanup
+          github-token: ${{ secrets.GITHUB_TOKEN }}

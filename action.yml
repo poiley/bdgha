@@ -1,0 +1,249 @@
+name: 'BD CI Auto-Remediation'
+description: 'Automatically create and manage fix beads when CI fails'
+author: 'poiley'
+
+branding:
+  icon: 'git-branch'
+  color: 'blue'
+
+inputs:
+  mode:
+    description: 'Action mode: create (create fix bead) or cleanup (close fix beads)'
+    required: false
+    default: 'create'
+  
+  # Failure details (for mode=create)
+  failure-type:
+    description: 'Type of failure: test_failure | coverage_gap | lint_error | build_error'
+    required: false
+  failure-summary:
+    description: 'Brief summary of failures'
+    required: false
+  failure-details-file:
+    description: 'Path to file with detailed failure output'
+    required: false
+  
+  # Bead identification
+  parent-bead-id:
+    description: 'Parent bead ID (auto-detected if not provided)'
+    required: false
+  pr-number:
+    description: 'Pull request number'
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  
+  # Configuration overrides
+  assign-to-pr-author:
+    description: 'Assign fix bead to PR author (true/false)'
+    required: false
+    default: 'true'
+  fix-bead-priority:
+    description: 'Priority for fix bead (0-4, 0=highest)'
+    required: false
+    default: '1'
+  block-parent:
+    description: 'Mark parent bead as blocked (true/false)'
+    required: false
+    default: 'true'
+  skip-if-no-parent:
+    description: 'Skip gracefully if no parent bead found (true/false)'
+    required: false
+    default: 'true'
+  
+  # Git configuration
+  sync-branch:
+    description: 'Git branch for beads sync'
+    required: false
+    default: 'beads-sync'
+  
+  # BD CLI configuration
+  bd-version:
+    description: 'BD CLI version (latest or specific tag like v0.49.6)'
+    required: false
+    default: 'latest'
+  
+  # GitHub configuration
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+
+outputs:
+  fix-bead-id:
+    description: 'ID of the created fix bead (mode=create only)'
+    value: ${{ steps.create-bead.outputs.bead-id }}
+  parent-bead-id:
+    description: 'ID of the parent bead'
+    value: ${{ steps.detect-parent.outputs.bead-id }}
+  skipped:
+    description: 'true if remediation was skipped'
+    value: ${{ steps.detect-parent.outputs.skipped }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ "${{ inputs.mode }}" = "create" ]; then
+          if [ -z "${{ inputs.failure-type }}" ]; then
+            echo "::error::failure-type is required for mode=create"
+            exit 1
+          fi
+          if [ -z "${{ inputs.failure-summary }}" ]; then
+            echo "::error::failure-summary is required for mode=create"
+            exit 1
+          fi
+        fi
+
+    - name: Check for .beads directory
+      shell: bash
+      run: |
+        if [ ! -d ".beads" ]; then
+          echo "::error::No .beads directory found. Is bd initialized in this repo?"
+          exit 1
+        fi
+
+    - name: Install bd CLI
+      shell: bash
+      env:
+        BD_VERSION: ${{ inputs.bd-version }}
+      run: ${{ github.action_path }}/scripts/install-bd.sh
+
+    - name: Detect parent bead ID
+      id: detect-parent
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        PARENT_BEAD_ID: ${{ inputs.parent-bead-id }}
+        SKIP_IF_NO_PARENT: ${{ inputs.skip-if-no-parent }}
+      run: ${{ github.action_path }}/scripts/extract-bead-id.sh
+
+    - name: Exit if skipped
+      if: steps.detect-parent.outputs.skipped == 'true'
+      shell: bash
+      run: |
+        echo "::notice::Skipping remediation (no parent bead found)"
+        exit 0
+
+    - name: Parse failure details
+      if: inputs.mode == 'create' && steps.detect-parent.outputs.skipped != 'true'
+      id: parse-failures
+      shell: bash
+      env:
+        FAILURE_TYPE: ${{ inputs.failure-type }}
+        FAILURE_SUMMARY: ${{ inputs.failure-summary }}
+        FAILURE_DETAILS_FILE: ${{ inputs.failure-details-file }}
+      run: |
+        case "$FAILURE_TYPE" in
+          test_failure)
+            ${{ github.action_path }}/scripts/parse-test-failures.sh
+            ;;
+          coverage_gap)
+            ${{ github.action_path }}/scripts/parse-coverage-gaps.sh
+            ;;
+          lint_error)
+            ${{ github.action_path }}/scripts/parse-lint-errors.sh
+            ;;
+          build_error)
+            ${{ github.action_path }}/scripts/parse-build-errors.sh
+            ;;
+          *)
+            echo "summary=$FAILURE_SUMMARY" >> $GITHUB_OUTPUT
+            echo "details=" >> $GITHUB_OUTPUT
+            ;;
+        esac
+
+    - name: Create fix bead
+      if: inputs.mode == 'create' && steps.detect-parent.outputs.skipped != 'true'
+      id: create-bead
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PARENT_BEAD_ID: ${{ steps.detect-parent.outputs.bead-id }}
+        FAILURE_TYPE: ${{ inputs.failure-type }}
+        FAILURE_SUMMARY: ${{ steps.parse-failures.outputs.summary }}
+        FAILURE_DETAILS: ${{ steps.parse-failures.outputs.details }}
+        CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ASSIGN_TO_PR_AUTHOR: ${{ inputs.assign-to-pr-author }}
+        FIX_BEAD_PRIORITY: ${{ inputs.fix-bead-priority }}
+        BLOCK_PARENT: ${{ inputs.block-parent }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: ${{ github.action_path }}/scripts/create-fix-bead.sh
+
+    - name: Cleanup fix beads
+      if: inputs.mode == 'cleanup' && steps.detect-parent.outputs.skipped != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        BEAD_ID: ${{ steps.detect-parent.outputs.bead-id }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: ${{ github.action_path }}/scripts/cleanup-beads.sh
+
+    - name: Sync beads to git
+      if: steps.detect-parent.outputs.skipped != 'true'
+      shell: bash
+      env:
+        SYNC_BRANCH: ${{ inputs.sync-branch }}
+        MODE: ${{ inputs.mode }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: |
+        echo "::group::Syncing beads to git"
+        
+        # Configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Export to JSONL
+        bd sync
+        
+        # Check if beads files changed
+        if ! git diff --quiet .beads/issues.jsonl 2>/dev/null; then
+          # Fetch sync branch
+          git fetch origin "$SYNC_BRANCH" 2>/dev/null || {
+            echo "Sync branch doesn't exist, creating it"
+            git checkout -b "$SYNC_BRANCH"
+            git add .beads/issues.jsonl
+            git commit -m "chore: initialize $SYNC_BRANCH"
+            git push -u origin "$SYNC_BRANCH"
+            echo "✅ Created and pushed $SYNC_BRANCH"
+            echo "::endgroup::"
+            exit 0
+          }
+          
+          # Switch to sync branch
+          git checkout "$SYNC_BRANCH"
+          git pull origin "$SYNC_BRANCH" || true
+          
+          # Merge main branch changes (in case of updates)
+          git merge origin/main -m "Merge main into $SYNC_BRANCH" || {
+            # Handle conflicts using bd sync resolver
+            bd sync --resolve --theirs || true
+            git add .beads/issues.jsonl
+            git commit -m "Resolve sync conflicts (prefer remote)" || true
+          }
+          
+          # Add changes
+          git add .beads/issues.jsonl
+          
+          # Commit with descriptive message
+          if [ "$MODE" = "create" ]; then
+            COMMIT_MSG="CI auto-remediation: Created fix bead for PR #$PR_NUMBER"
+          else
+            COMMIT_MSG="CI auto-remediation: Closed fix beads for PR #$PR_NUMBER"
+          fi
+          git commit -m "$COMMIT_MSG" || {
+            echo "No changes to commit"
+            echo "::endgroup::"
+            exit 0
+          }
+          
+          # Push to remote
+          git push origin "$SYNC_BRANCH"
+          
+          echo "✅ Beads synced to $SYNC_BRANCH"
+        else
+          echo "No changes to sync"
+        fi
+        
+        echo "::endgroup::"

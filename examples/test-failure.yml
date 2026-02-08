@@ -1,0 +1,79 @@
+name: Test with Auto-Remediation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run tests
+        run: |
+          go test -v -race -json ./... > test-results.json 2>&1 || true
+
+      - name: Check test results
+        run: |
+          if grep -q '"Action":"fail"' test-results.json; then
+            echo "Tests failed"
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.json
+
+  create-fix-bead:
+    name: Create Fix Bead
+    if: failure() && github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: test_failure
+          failure-summary: "Tests failed - see artifacts for details"
+          failure-details-file: test-results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-fix-beads:
+    name: Cleanup Fix Beads
+    if: success() && github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: cleanup
+          github-token: ${{ secrets.GITHUB_TOKEN }}

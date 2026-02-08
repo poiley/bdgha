@@ -1,0 +1,75 @@
+name: Build with Auto-Remediation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build Binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        run: |
+          go build -v ./... > build-output.txt 2>&1 || {
+            cat build-output.txt
+            exit 1
+          }
+
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: build-output.txt
+
+  create-fix-bead:
+    name: Create Fix Bead
+    if: failure() && github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: create
+          failure-type: build_error
+          failure-summary: "Build failed"
+          failure-details-file: build-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-fix-beads:
+    name: Cleanup Fix Beads
+    if: success() && github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: poiley/bdgha@v1
+        with:
+          mode: cleanup
+          github-token: ${{ secrets.GITHUB_TOKEN }}
