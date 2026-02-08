@@ -2,6 +2,7 @@
 .DS_Store
 .AppleDouble
 .LSOverride
+._*
 
 # IDE
 .vscode/
@@ -9,12 +10,42 @@
 *.swp
 *.swo
 *~
+.project
+.classpath
+.settings/
 
 # Testing
 test-results/
 coverage/
 *.log
+*.out
+*.test
+test-output/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
 
 # Temporary files
 *.tmp
 tmp/
+.tmp/
+
+# BD/Beads testing
+.beads/
+*.jsonl
+
+# Node modules (if adding tests)
+node_modules/
+
+# Python (if adding tests)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environment
+.env
+.env.local

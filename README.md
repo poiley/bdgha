@@ -2,6 +2,17 @@
 
 Automatically create and manage fix beads when CI fails in repositories using [bd (beads)](https://github.com/steveyegge/beads) issue tracking.
 
+[![Release](https://img.shields.io/github/v/release/poiley/bdgha)](https://github.com/poiley/bdgha/releases)
+[![License](https://img.shields.io/github/license/poiley/bdgha)](LICENSE)
+
+## What This Does
+
+When a PR's CI fails:
+1. **Auto-creates** a fix bead with failure details
+2. **Marks parent bead** as blocked with dependency
+3. **Syncs to git** so agents discover it automatically
+4. **Auto-closes** fix bead when CI passes
+
 ## Features
 
 - 🔍 **Auto-detects parent bead** from PR title, branch name, or commits
@@ -11,6 +22,39 @@ Automatically create and manage fix beads when CI fails in repositories using [b
 - ✅ **Auto-closes fix beads** when PR CI passes
 - 🔄 **Syncs to git** for distributed team/agent access
 - 🎯 **Supports 4 failure types**: test, coverage, lint, build
+
+## How It Works
+
+```
+PR Created (kubrick-abc)
+  ↓
+CI Runs (test, coverage, lint, build)
+  ↓
+❌ CI Fails
+  ↓
+bdgha Action Triggers
+  ├─ Detects parent: kubrick-abc
+  ├─ Parses failures: "3 tests failed"
+  ├─ Creates fix bead: kubrick-fix-abc
+  ├─ Marks parent: blocked
+  ├─ Creates dependency: kubrick-abc → kubrick-fix-abc
+  └─ Syncs to beads-sync branch
+  ↓
+Agent bd daemon auto-pulls
+  ↓
+Agent discovers fix bead
+  ├─ Claims: bd update kubrick-fix-abc --claim
+  ├─ Fixes: checkout PR branch, fix tests
+  ├─ Pushes: git push origin kubrick-abc/branch
+  └─ CI re-runs
+  ↓
+✅ CI Passes
+  ↓
+bdgha Cleanup Triggers
+  ├─ Finds fix beads for kubrick-abc
+  ├─ Closes: kubrick-fix-abc
+  └─ Syncs to beads-sync branch
+```
 
 ## Quick Start
 
@@ -266,6 +310,56 @@ Configure per-workflow using inputs:
 - **GitHub Actions**: Repository with PR-based CI workflows
 - **Git**: Sync branch for beads JSONL files
 - **Permissions**: `contents: write` and `pull-requests: read`
+
+## FAQ
+
+### Why use this instead of manual issue creation?
+
+**Automation**: Eliminates manual overhead. Every CI failure automatically gets tracked.
+
+**Consistency**: Every fix bead has the same structure with resolution checklists.
+
+**Discovery**: Agents/teammates automatically discover work via git sync.
+
+**Audit trail**: Complete history of CI failures and fixes in your beads database.
+
+### Can I use this without bd?
+
+No, this action requires bd (beads) for issue tracking. However, bd is free, open-source, and easy to install.
+
+### Does this work with private repositories?
+
+Yes! The action uses the default `${{ secrets.GITHUB_TOKEN }}` which has access to private repos.
+
+### What if I don't want all failure types?
+
+Configure per-workflow. Only add the action to workflows you want auto-remediation for.
+
+### How do I disable auto-remediation temporarily?
+
+Set `enabled: false` in `.beads/config.yaml`:
+```yaml
+ci:
+  auto-remediation:
+    enabled: false
+```
+
+### What happens if the sync branch has conflicts?
+
+The action automatically uses `bd sync --resolve --theirs` to prefer remote changes.
+
+## Roadmap
+
+Potential future enhancements:
+
+- [ ] Support for custom failure parsers
+- [ ] Slack/Discord notifications when fix beads are created
+- [ ] GitHub issue integration (create GitHub issue + bead)
+- [ ] Analytics dashboard for CI failure trends
+- [ ] Support for other CI platforms (CircleCI, GitLab CI)
+- [ ] Automatic PR creation for simple fixes
+
+See [issues](https://github.com/poiley/bdgha/issues) to suggest features or report bugs.
 
 ## Contributing
 
