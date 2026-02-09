@@ -33,7 +33,19 @@ if [ -z "$DOWNLOAD_URL" ]; then
 fi
 
 echo "Downloading bd from: $DOWNLOAD_URL"
-curl -sL "$DOWNLOAD_URL" -o /tmp/bd.tar.gz
+if ! curl -sSL "$DOWNLOAD_URL" -o /tmp/bd.tar.gz; then
+  echo "::error::Failed to download bd from $DOWNLOAD_URL"
+  exit 1
+fi
+
+# Verify it's actually a gzip file
+if ! file /tmp/bd.tar.gz | grep -q "gzip"; then
+  echo "::error::Downloaded file is not a gzip archive"
+  echo "File type: $(file /tmp/bd.tar.gz)"
+  echo "First 100 bytes:"
+  head -c 100 /tmp/bd.tar.gz
+  exit 1
+fi
 
 echo "Extracting archive..."
 tar -xzf /tmp/bd.tar.gz -C /tmp
