@@ -14,6 +14,9 @@ if [ -f ".beads/config.yaml" ]; then
   fi
 fi
 
+METADATA_FILE="${METADATA_FILE:-/tmp/ci-metadata.json}"
+BD_FLAGS="--no-db --no-daemon"
+
 # Get PR details
 echo "Fetching PR details..."
 PR_TITLE=$(gh pr view "$PR_NUMBER" --json title -q '.title')
@@ -24,108 +27,126 @@ echo "  PR #$PR_NUMBER: $PR_TITLE"
 echo "  Author: $PR_AUTHOR"
 echo "  Branch: $PR_BRANCH"
 
+# Inject PR context into metadata if metadata file exists
+if [ -f "$METADATA_FILE" ]; then
+  TEMP_META=$(mktemp)
+  jq --arg branch "$PR_BRANCH" --arg pr "$PR_NUMBER" --arg ci "$CI_RUN_URL" \
+    '.ci_failure.context.pr_branch = $branch |
+     .ci_failure.context.pr_number = ($pr | tonumber? // 0) |
+     .ci_failure.context.ci_run = $ci' "$METADATA_FILE" > "$TEMP_META"
+  mv "$TEMP_META" "$METADATA_FILE"
+fi
+
 # Read config (with defaults)
 ASSIGN_TO_AUTHOR="${ASSIGN_TO_PR_AUTHOR:-true}"
 PRIORITY="${FIX_BEAD_PRIORITY:-1}"
 BLOCK_PARENT="${BLOCK_PARENT:-true}"
 
-# Generate description from template
-DESCRIPTION=$(cat <<EOF
-## 🔧 CI Auto-Remediation
+# --- REGRESSION DETECTION ---
+# Check if a closed fix bead already exists for this failure type + PR
+echo "Checking for existing fix beads..."
+EXISTING_CLOSED=$(bd list --label "ci-failure" --label "$FAILURE_TYPE" --status closed --json $BD_FLAGS 2>/dev/null | \
+  jq -r --arg pr "$PR_NUMBER" '.[] | select(
+    (.metadata.ci_failure.context.pr_number // 0 | tostring) == $pr
+  ) | .id' 2>/dev/null | head -1 || echo "")
 
-**Parent Bead**: $PARENT_BEAD_ID  
-**PR**: #$PR_NUMBER - $PR_TITLE  
-**Failure Type**: $FAILURE_TYPE  
-**Created**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+EXISTING_OPEN=$(bd list --label "ci-failure" --label "$FAILURE_TYPE" --status open --json $BD_FLAGS 2>/dev/null | \
+  jq -r --arg pr "$PR_NUMBER" '.[] | select(
+    (.metadata.ci_failure.context.pr_number // 0 | tostring) == $pr
+  ) | .id' 2>/dev/null | head -1 || echo "")
 
----
+if [ -n "$EXISTING_OPEN" ]; then
+  # Fix bead still open for this type + PR - update it with latest info
+  echo "Updating existing open fix bead: $EXISTING_OPEN"
+  if [ -f "$METADATA_FILE" ]; then
+    bd update "$EXISTING_OPEN" --metadata "@$METADATA_FILE" $BD_FLAGS
+  fi
+  bd update "$EXISTING_OPEN" --append-notes "--- CI re-run $(date -u +%Y-%m-%dT%H:%M:%SZ): still failing ---" $BD_FLAGS
+  CHILD_BEAD_ID="$EXISTING_OPEN"
 
-## 📊 Summary
+elif [ -n "$EXISTING_CLOSED" ]; then
+  # Regression: reopen the closed fix bead
+  echo "Regression detected! Reopening: $EXISTING_CLOSED"
+  bd reopen "$EXISTING_CLOSED" --reason "Regression: $FAILURE_TYPE failed again on PR #$PR_NUMBER" $BD_FLAGS
+  if [ -f "$METADATA_FILE" ]; then
+    bd update "$EXISTING_CLOSED" --metadata "@$METADATA_FILE" $BD_FLAGS
+  fi
+  bd update "$EXISTING_CLOSED" --append-notes "--- Regression $(date -u +%Y-%m-%dT%H:%M:%SZ): $FAILURE_TYPE failed again ---" $BD_FLAGS
+  CHILD_BEAD_ID="$EXISTING_CLOSED"
 
-$FAILURE_SUMMARY
+  # Re-establish blocking dependency (may have been removed on close)
+  if [ "$BLOCK_PARENT" = "true" ]; then
+    bd dep add "$PARENT_BEAD_ID" "$CHILD_BEAD_ID" $BD_FLAGS 2>/dev/null || true
+    bd update "$PARENT_BEAD_ID" --status blocked $BD_FLAGS 2>/dev/null || true
+  fi
 
-## 🔍 Details
+else
+  # No existing fix bead - create new one
+  echo "Creating new fix bead..."
 
-$FAILURE_DETAILS
+  # Build description from metadata
+  SUMMARY="${FAILURE_SUMMARY:-CI failure}"
+  if [ -f "$METADATA_FILE" ]; then
+    SUMMARY=$(jq -r '.ci_failure.summary // "CI failure"' "$METADATA_FILE")
+  fi
 
-## 🔗 Resources
+  DESCRIPTION="## Fix CI: $FAILURE_TYPE in $PARENT_BEAD_ID
 
-- **CI Run**: [View Full Logs]($CI_RUN_URL)
-- **Artifacts**: [Download from Actions]($CI_RUN_URL)
-- **PR Branch**: \`$PR_BRANCH\`
+**PR**: #$PR_NUMBER - $PR_TITLE
+**Branch**: \`$PR_BRANCH\`
+**Failure**: $SUMMARY
+**CI Run**: $CI_RUN_URL
 
----
+### Resolution
+1. \`bd update <this-bead> --claim\`
+2. \`git fetch && git checkout $PR_BRANCH\`
+3. Fix the failures (see metadata for details)
+4. \`make lint && make test && make test-coverage && make build\`
+5. \`git push origin $PR_BRANCH\`
+6. CI will auto-close this bead when the gate passes"
 
-## ✅ Resolution Checklist
+  # Build create args
+  CREATE_ARGS=(
+    "Fix CI: $FAILURE_TYPE in $PARENT_BEAD_ID"
+    --type task
+    --priority "$PRIORITY"
+    --description "$DESCRIPTION"
+    --labels "ci-failure,auto-remediation,$FAILURE_TYPE"
+    --external-ref "gh-pr-$PR_NUMBER"
+    --silent
+  )
 
-1. **Claim this bead**: \`bd update <bead-id> --claim\`
-2. **Checkout PR branch**: \`git fetch && git checkout $PR_BRANCH\`
-3. **Review failures**: Check artifacts and logs linked above
-4. **Fix the issue**: Address the specific failures listed
-5. **Verify locally**: Run all quality gates
-   \`\`\`bash
-   make lint && make test && make test-coverage && make build
-   \`\`\`
-6. **Push to PR branch**: 
-   \`\`\`bash
-   git add .
-   git commit -m "$PARENT_BEAD_ID: Fix $FAILURE_TYPE"
-   git push origin $PR_BRANCH
-   \`\`\`
-7. **Monitor CI**: Wait for all checks to pass
-8. **Auto-close**: This bead will auto-close when parent PR CI passes
+  # Add blocking dependency
+  if [ "$BLOCK_PARENT" = "true" ]; then
+    CREATE_ARGS+=(--deps "blocks:$PARENT_BEAD_ID")
+  fi
 
----
+  # Conditionally add assignee
+  if [ "$ASSIGN_TO_AUTHOR" = "true" ]; then
+    CREATE_ARGS+=(--assignee "$PR_AUTHOR")
+  fi
 
-## 📝 Context
+  CHILD_BEAD_ID=$(bd create "${CREATE_ARGS[@]}" $BD_FLAGS)
 
-This bead was automatically created by \`poiley/bdgha\` when PR #$PR_NUMBER failed CI.
+  if [ -z "$CHILD_BEAD_ID" ]; then
+    echo "::error::Failed to create fix bead"
+    exit 1
+  fi
 
-**CI Run**: $CI_RUN_URL  
-**Actor**: @$PR_AUTHOR  
-**Triggered**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-EOF
-)
+  echo "✅ Created fix bead: $CHILD_BEAD_ID"
 
-# Build create command arguments
-CREATE_ARGS=(
-  "Fix CI: $FAILURE_TYPE in $PARENT_BEAD_ID"
-  --parent "$PARENT_BEAD_ID"
-  --type task
-  --priority "$PRIORITY"
-  --description "$DESCRIPTION"
-  --labels "ci-failure,auto-remediation,$FAILURE_TYPE"
-  --external-ref "gh-pr-$PR_NUMBER"
-  --silent
-)
+  # Attach structured metadata
+  if [ -f "$METADATA_FILE" ]; then
+    bd update "$CHILD_BEAD_ID" --metadata "@$METADATA_FILE" $BD_FLAGS
+    echo "✅ Attached metadata to $CHILD_BEAD_ID"
+  fi
 
-# Conditionally add assignee
-if [ "$ASSIGN_TO_AUTHOR" = "true" ]; then
-  CREATE_ARGS+=(--assignee "$PR_AUTHOR")
+  # Mark parent as blocked
+  if [ "$BLOCK_PARENT" = "true" ]; then
+    bd update "$PARENT_BEAD_ID" --status blocked $BD_FLAGS 2>/dev/null || true
+    echo "✅ Marked parent $PARENT_BEAD_ID as blocked"
+  fi
 fi
-
-# Create child bead
-echo "Creating child bead..."
-CHILD_BEAD_ID=$(bd create "${CREATE_ARGS[@]}")
-
-if [ -z "$CHILD_BEAD_ID" ]; then
-  echo "::error::Failed to create fix bead"
-  exit 1
-fi
-
-echo "✅ Created fix bead: $CHILD_BEAD_ID"
-
-# Update parent status to blocked (if configured)
-if [ "$BLOCK_PARENT" = "true" ]; then
-  echo "Marking parent as blocked..."
-  bd update "$PARENT_BEAD_ID" --status blocked
-  echo "✅ Marked parent $PARENT_BEAD_ID as blocked"
-fi
-
-# Create dependency (parent depends on child)
-echo "Creating dependency..."
-bd dep add "$PARENT_BEAD_ID" "$CHILD_BEAD_ID"
-echo "✅ Created dependency: $PARENT_BEAD_ID depends on $CHILD_BEAD_ID"
 
 echo "bead-id=$CHILD_BEAD_ID" >> "$GITHUB_OUTPUT"
 echo "skipped=false" >> "$GITHUB_OUTPUT"
