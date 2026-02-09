@@ -76,7 +76,7 @@ outputs:
     value: ${{ steps.detect-parent.outputs.bead-id }}
   skipped:
     description: 'true if remediation was skipped'
-    value: ${{ steps.result.outputs.skipped }}
+    value: ${{ steps.result-sync.outputs.skipped || steps.result-skipped.outputs.skipped || steps.result-final.outputs.skipped || 'true' }}
 
 runs:
   using: 'composite'
@@ -125,7 +125,7 @@ runs:
 
     - name: Set sync result
       if: inputs.mode == 'sync'
-      id: result
+      id: result-sync
       shell: bash
       run: echo "skipped=false" >> "$GITHUB_OUTPUT"
 
@@ -294,6 +294,6 @@ runs:
     # --- FINAL RESULT ---
     - name: Set final result
       if: inputs.mode != 'sync' && steps.detect-parent.outputs.skipped != 'true'
-      id: result
+      id: result-final
       shell: bash
       run: echo "skipped=false" >> "$GITHUB_OUTPUT"
