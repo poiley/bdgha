@@ -107,6 +107,7 @@ runs:
       shell: bash
       env:
         BD_VERSION: ${{ inputs.bd-version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/scripts/install-bd.sh
 
     - name: Detect parent bead ID

@@ -23,7 +23,18 @@ fi
 
 # Download release asset
 echo "Fetching release info from: $RELEASE_URL"
-DOWNLOAD_URL=$(curl -sL "$RELEASE_URL" | jq -r ".assets[] | select(.name | test(\"beads_.*_${OS}_${ARCH}\")) | .browser_download_url")
+
+# Use GitHub token if available for higher rate limits
+CURL_AUTH_HEADER=""
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  CURL_AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+fi
+
+if [ -n "$CURL_AUTH_HEADER" ]; then
+  DOWNLOAD_URL=$(curl -sSL -H "$CURL_AUTH_HEADER" "$RELEASE_URL" | jq -r ".assets[] | select(.name | test(\"beads_.*_${OS}_${ARCH}\")) | .browser_download_url")
+else
+  DOWNLOAD_URL=$(curl -sSL "$RELEASE_URL" | jq -r ".assets[] | select(.name | test(\"beads_.*_${OS}_${ARCH}\")) | .browser_download_url")
+fi
 
 if [ -z "$DOWNLOAD_URL" ]; then
   echo "::error::Could not find bd release for ${OS}_${ARCH}"
