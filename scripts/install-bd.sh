@@ -49,12 +49,13 @@ if ! curl -sSL "$DOWNLOAD_URL" -o /tmp/bd.tar.gz; then
   exit 1
 fi
 
-# Verify it's actually a gzip file
-if ! file /tmp/bd.tar.gz | grep -q "gzip"; then
-  echo "::error::Downloaded file is not a gzip archive"
-  echo "File type: $(file /tmp/bd.tar.gz)"
-  echo "First 100 bytes:"
-  head -c 100 /tmp/bd.tar.gz
+# Verify it's actually a gzip file by checking magic bytes (0x1f 0x8b).
+# Uses od (coreutils) instead of `file` which may not be on self-hosted runners.
+MAGIC=$(od -A n -t x1 -N 2 /tmp/bd.tar.gz 2>/dev/null | tr -d ' \n')
+if [ "$MAGIC" != "1f8b" ]; then
+  echo "::error::Downloaded file is not a gzip archive (magic bytes: ${MAGIC:-unknown})"
+  echo "This may indicate a GitHub API rate limit or redirect issue."
+  head -c 200 /tmp/bd.tar.gz 2>/dev/null || true
   exit 1
 fi
 
