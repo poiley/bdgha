@@ -14,8 +14,15 @@ fi
 
 # Auto-detect bead prefix from config
 BEAD_PREFIX=$(bd config get issue_prefix 2>/dev/null || echo "")
+
+# Fallback: infer prefix from GitHub repository name (e.g., "actual-software/kubrick" -> "kubrick")
+if [ -z "$BEAD_PREFIX" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+  BEAD_PREFIX=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
+  echo "::notice::No issue_prefix in bd config, inferred prefix from repo name: $BEAD_PREFIX"
+fi
+
 if [ -z "$BEAD_PREFIX" ]; then
-  echo "::warning::No issue_prefix found in bd config, skipping remediation"
+  echo "::warning::No issue_prefix found in bd config and could not infer from repo name, skipping remediation"
   echo "bead-id=" >> "$GITHUB_OUTPUT"
   echo "skipped=true" >> "$GITHUB_OUTPUT"
   echo "::endgroup::"
