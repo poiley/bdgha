@@ -139,6 +139,14 @@ runs:
         echo "::group::Importing beads state"
         git fetch origin "$SYNC_BRANCH" 2>/dev/null || true
         git show "origin/$SYNC_BRANCH:.beads/issues.jsonl" > .beads/issues.jsonl 2>/dev/null || touch .beads/issues.jsonl
+        # Import JSONL into the bd database so bd show/list/update commands work.
+        # Writing the file alone is not enough — bd reads from its SQLite database,
+        # not from the JSONL file directly.
+        if [ -s .beads/issues.jsonl ]; then
+          bd import -i .beads/issues.jsonl --no-daemon 2>/dev/null || {
+            echo "::warning::bd import failed, falling back to --no-db mode for subsequent commands"
+          }
+        fi
         echo "✅ Imported beads state from $SYNC_BRANCH"
         echo "::endgroup::"
 
