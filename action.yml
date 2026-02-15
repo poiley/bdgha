@@ -129,6 +129,19 @@ runs:
       shell: bash
       run: echo "skipped=false" >> "$GITHUB_OUTPUT"
 
+    # --- IMPORT BEADS STATE (must run before detect-parent so bd show works) ---
+    - name: Import beads state
+      if: inputs.mode != 'sync'
+      shell: bash
+      env:
+        SYNC_BRANCH: ${{ inputs.sync-branch }}
+      run: |
+        echo "::group::Importing beads state"
+        git fetch origin "$SYNC_BRANCH" 2>/dev/null || true
+        git show "origin/$SYNC_BRANCH:.beads/issues.jsonl" > .beads/issues.jsonl 2>/dev/null || touch .beads/issues.jsonl
+        echo "✅ Imported beads state from $SYNC_BRANCH"
+        echo "::endgroup::"
+
     # --- DETECT PARENT (create/cleanup modes) ---
     - name: Detect parent bead ID
       if: inputs.mode != 'sync'
@@ -148,19 +161,6 @@ runs:
       run: |
         echo "skipped=true" >> "$GITHUB_OUTPUT"
         echo "::notice::Skipping remediation (no parent bead found)"
-
-    # --- IMPORT BEADS STATE (create/cleanup need current state) ---
-    - name: Import beads state
-      if: inputs.mode != 'sync' && steps.detect-parent.outputs.skipped != 'true'
-      shell: bash
-      env:
-        SYNC_BRANCH: ${{ inputs.sync-branch }}
-      run: |
-        echo "::group::Importing beads state"
-        git fetch origin "$SYNC_BRANCH" 2>/dev/null || true
-        git show "origin/$SYNC_BRANCH:.beads/issues.jsonl" > .beads/issues.jsonl 2>/dev/null || touch .beads/issues.jsonl
-        echo "✅ Imported beads state from $SYNC_BRANCH"
-        echo "::endgroup::"
 
     # --- PARSE FAILURES (create mode) ---
     - name: Get PR branch
