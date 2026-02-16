@@ -63,8 +63,16 @@ fi
 # Validate bead exists
 echo "Validating bead exists: $BEAD_ID"
 if ! bd show "$BEAD_ID" --json &>/dev/null; then
-  echo "::error::Parent bead $BEAD_ID not found in database"
-  exit 1
+  if [ "${SKIP_IF_NO_PARENT:-true}" = "true" ]; then
+    echo "::warning::Parent bead $BEAD_ID not found in database, skipping remediation"
+    echo "bead-id=" >> "$GITHUB_OUTPUT"
+    echo "skipped=true" >> "$GITHUB_OUTPUT"
+    echo "::endgroup::"
+    exit 0
+  else
+    echo "::error::Parent bead $BEAD_ID not found in database"
+    exit 1
+  fi
 fi
 
 echo "✅ Found parent bead: $BEAD_ID"
